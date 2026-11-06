@@ -10,6 +10,7 @@ import { PlayerMovement, buildFigure, MOVE } from './player.js';
 import { FollowCamera } from './followCamera.js';
 import { Controls } from './controls.js';
 import { loadCharacter } from './character.js';
+import { Quality, savedChoice } from './quality.js';
 
 const params = new URLSearchParams(location.search);
 const debugBox = document.getElementById('debug');
@@ -20,9 +21,9 @@ const layoutMs = performance.now() - startedAt;
 const world = buildWorld(layout);
 const buildMs = performance.now() - startedAt - layoutMs;
 
-const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-const pixelRatio = Number(params.get('dpr')) || Math.min(window.devicePixelRatio, 2);
-renderer.setPixelRatio(pixelRatio);
+// Smoothing of jagged edges costs a lot on old phones; it is left out when the saved quality is "low"
+const renderer = new THREE.WebGLRenderer({ antialias: savedChoice() !== 'low', powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 // (?tone=aces / neutral / agx to compare)
 renderer.toneMapping = { aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, agx: THREE.AgXToneMapping }[params.get('tone')]
@@ -69,6 +70,17 @@ const controls = new Controls(renderer.domElement, ui);
 // Time of day: starts at 10:00 like the Unreal level (?time=18.5 to start at another hour)
 const sky = new ForestSky(world.scene, renderer);
 sky.setTime(Number(params.get('time')) || 10);
+
+// Picture quality (button at the top right; automatic by default)
+const quality = new Quality({
+  renderer,
+  scene: world.scene,
+  sun: sky.sun,
+  world,
+  button: document.getElementById('quality'),
+  toast: document.getElementById('toast'),
+});
+if (params.get('dpr')) renderer.setPixelRatio(Number(params.get('dpr'))); // for checks
 const timeButton = document.getElementById('time');
 const TIMES = [6.5, 12, 18.4, 21.5]; // morning (with mist), noon, sunset, night
 let timeGoal = null;
@@ -164,7 +176,6 @@ const stats = {
   buildMs: Math.round(buildMs),
   trees: layout.trees.length,
   grass: layout.grass.length,
-  pixelRatio,
 };
 window.forestStats = stats;
 let frames = 0;
@@ -177,6 +188,7 @@ renderer.setAnimationLoop((now) => {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
   if (!paused) update(dt);
+  quality.tick(dt);
   renderer.render(world.scene, camera);
   if (controls.used && !ui.hint.classList.contains('gone')) ui.hint.classList.add('gone');
   frames++;
@@ -189,7 +201,7 @@ renderer.setAnimationLoop((now) => {
     frames = 0;
     windowStart = now;
     if (!debugBox.hidden) {
-      debugBox.textContent = `${stats.fps} fps  ${stats.calls} draws  ${(stats.triangles / 1000).toFixed(0)}k tris  dpr ${pixelRatio}`;
+      debugBox.textContent = `${stats.fps} fps  ${stats.calls} draws  ${(stats.triangles / 1000).toFixed(0)}k tris  dpr ${renderer.getPixelRatio()}  ${quality.level}`;
     }
   }
 });
@@ -199,6 +211,7 @@ if (params.has('debug')) debugBox.hidden = false;
 const fullscreen = document.getElementById('fullscreen');
 if (document.fullscreenEnabled) {
   fullscreen.hidden = false;
+  document.getElementById('quality').classList.add('beside-fullscreen');
   fullscreen.addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen().then(() => screen.orientation?.lock?.('landscape').catch(() => {}));
@@ -492,6 +505,7 @@ window.forestTest = {
     return sky.label;
   },
   sky,
+  quality,
   get character() {
     return character;
   },

@@ -99,13 +99,14 @@ export function setUnrealMatrix(target, x, y, z, pitch, yaw, roll, sx, sy, sz) {
 
 /** Many copies of one shape in one draw call. */
 class InstanceBatch {
-  constructor(geometry, material, { castShadow = false, receiveShadow = false, variation = 0 } = {}) {
+  constructor(geometry, material, { castShadow = false, receiveShadow = false, variation = 0, shuffle = false } = {}) {
     this.geometry = geometry;
     this.material = material;
     this.matrices = [];
     this.castShadow = castShadow;
     this.receiveShadow = receiveShadow;
     this.variation = variation; // how much lighter or darker each copy may be (0.1 = 10%)
+    this.shuffle = shuffle; // mix up the order, so drawing only the first part thins out evenly
   }
 
   add(x, y, z, pitch, yaw, roll, sx, sy, sz) {
@@ -113,6 +114,12 @@ class InstanceBatch {
   }
 
   build(name) {
+    if (this.shuffle) {
+      for (let i = this.matrices.length - 1; i > 0; i--) {
+        const j = Math.floor(hash(i + 7919) * (i + 1));
+        [this.matrices[i], this.matrices[j]] = [this.matrices[j], this.matrices[i]];
+      }
+    }
     const mesh = new THREE.InstancedMesh(this.geometry, this.material, Math.max(1, this.matrices.length));
     mesh.name = name;
     this.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
@@ -281,8 +288,8 @@ export function buildWorld(layout) {
   const farBroadleaves = new InstanceBatch(farSphere, lambert(COLORS.broadleaf), { variation: 0.12 });
   const rocks = new InstanceBatch(rockShape, lambert(COLORS.rock, { flatShading: true }), { castShadow: true, receiveShadow: true, variation: 0.15 });
   const stones = new InstanceBatch(pebbleShape, lambert(COLORS.streamStone, { flatShading: true }));
-  const grass = new InstanceBatch(tuftShape, addWind(lambert(COLORS.grass), 0.04), { variation: 0.22 });
-  const ferns = new InstanceBatch(tuftShape, addWind(lambert(COLORS.fern), 0.025), { receiveShadow: true, variation: 0.18 });
+  const grass = new InstanceBatch(tuftShape, addWind(lambert(COLORS.grass), 0.04), { variation: 0.22, shuffle: true });
+  const ferns = new InstanceBatch(tuftShape, addWind(lambert(COLORS.fern), 0.025), { receiveShadow: true, variation: 0.18, shuffle: true });
   const logs = new InstanceBatch(logShape, lambert(COLORS.log), { castShadow: true, receiveShadow: true });
   const wood = new InstanceBatch(box, lambert(COLORS.bridge), { castShadow: true, receiveShadow: true });
 
@@ -392,5 +399,11 @@ export function buildWorld(layout) {
     current = ref;
   }
 
-  return { scene, trunkColliders, setSeeThrough };
+  /** Draws only part of the grass and ferns (0..1), to make the picture lighter. */
+  function setDetail(grassAmount, fernAmount) {
+    meshes.grass.count = Math.round(grass.matrices.length * grassAmount);
+    meshes.ferns.count = Math.round(ferns.matrices.length * fernAmount);
+  }
+
+  return { scene, trunkColliders, setSeeThrough, setDetail };
 }

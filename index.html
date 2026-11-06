@@ -59,6 +59,18 @@
     border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.3);
     color: #fff; font-size: 13px;
   }
+  #quality {
+    position: fixed; right: calc(12px + env(safe-area-inset-right)); top: 12px; padding: 6px 10px;
+    border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.3);
+    color: #fff; font-size: 13px; touch-action: none;
+  }
+  #quality.beside-fullscreen { right: calc(84px + env(safe-area-inset-right)); }
+  #toast {
+    position: fixed; left: 50%; top: 56px; transform: translateX(-50%); max-width: 80vw; padding: 8px 14px;
+    border-radius: 10px; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 14px; line-height: 1.5;
+    text-align: center; pointer-events: none; opacity: 0; transition: opacity 0.4s;
+  }
+  #toast.shown { opacity: 1; }
   #hint {
     position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 8px 14px;
     border-radius: 10px; background: rgba(0, 0, 0, 0.45); color: #fff; font-size: 14px; line-height: 1.5;
@@ -90,7 +102,9 @@
 <button id="jump" type="button">ジャンプ</button>
 <button id="climb" type="button" hidden>登る</button>
 <button id="time" type="button">昼 10:00</button>
+<button id="quality" type="button">画質 自動・高</button>
 <button id="fullscreen" type="button" hidden>全画面</button>
+<div id="toast"></div>
 <div id="hint">左の指で歩く ・ 右の指で見回す</div>
 <div id="debug" hidden></div>
 <div id="rotate"><div><span>📱↻</span>スマホを横向きにしてね</div></div>

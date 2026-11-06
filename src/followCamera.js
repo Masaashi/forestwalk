@@ -32,7 +32,7 @@ export class FollowCamera {
   /** Is this spot (Unreal cm) clear for the camera? (Ground, rocks, logs, bridges and trunks block it.) */
   clear(player, x, y, z) {
     if (z < player.topAt(x, y) + PROBE) return false;
-    for (const trunk of this.trunks) {
+    for (const trunk of player.trunks.near(x, y)) { // (only the trunks around this spot)
       if (z > trunk.top) continue;
       const dx = x - trunk.x;
       const dy = y - trunk.y;
