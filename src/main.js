@@ -9,6 +9,7 @@ import { ForestSky } from './sky.js';
 import { PlayerMovement, buildFigure, MOVE } from './player.js';
 import { FollowCamera } from './followCamera.js';
 import { Controls } from './controls.js';
+import { loadCharacter } from './character.js';
 
 const params = new URLSearchParams(location.search);
 const debugBox = document.getElementById('debug');
@@ -39,8 +40,21 @@ window.addEventListener('resize', () => {
 });
 
 const player = new PlayerMovement(layout, world.trunkColliders);
-const figure = buildFigure();
+// The stand-in figure shows until TakinT has loaded (?figure=simple keeps the stand-in)
+let figure = buildFigure();
 world.scene.add(figure.root);
+let character = null;
+if (params.get('figure') !== 'simple') {
+  loadCharacter('models/TakinT.glb')
+    .then((loaded) => {
+      world.scene.remove(figure.root);
+      figure = loaded;
+      character = loaded;
+      world.scene.add(figure.root);
+      figure.update(player, 0);
+    })
+    .catch((error) => console.warn('TakinT could not be loaded; keeping the stand-in figure.', error));
+}
 const follow = new FollowCamera(camera, layout, world.trunkColliders);
 follow.yaw = player.yaw;
 const ui = {
@@ -105,6 +119,8 @@ function update(dt) {
   }
   figure.update(player, dt);
   follow.update(player, dt);
+  // When a trunk pushes the camera right up to the body, hide the body instead of looking inside it
+  figure.root.visible = follow.arm > 70;
   advanceTime(dt);
   wind.time.value += dt;
   placeSun();
@@ -128,10 +144,12 @@ let frames = 0;
 let windowStart = performance.now();
 let last = performance.now();
 
+let paused = false; // for pictures: the checks below can hold the game still
+
 renderer.setAnimationLoop((now) => {
   const dt = Math.min((now - last) / 1000, 0.1);
   last = now;
-  update(dt);
+  if (!paused) update(dt);
   renderer.render(world.scene, camera);
   if (controls.used && !ui.hint.classList.contains('gone')) ui.hint.classList.add('gone');
   frames++;
@@ -359,20 +377,38 @@ window.forestTest = {
     return result;
   },
   /** Put the player somewhere and draw one frame (for pictures). */
-  place(x, y, yaw, cameraYaw = yaw, cameraPitch = -15) {
+  place(x, y, yaw, cameraYaw = yaw, cameraPitch = -15, arm = 400) {
     player.reset(x, y, yaw);
     follow.yaw = cameraYaw;
     follow.pitch = cameraPitch;
-    follow.arm = 400;
+    follow.arm = arm;
     update(0);
     renderer.render(world.scene, camera);
   },
   /** Walk forward with the stick held for some seconds (to see the walk in a picture). */
   walkFor(seconds, x = 0, y = 1) {
-    simulate(seconds, () => groundDirection({ x, y }));
-    update(STEP);
+    // (the figure's walk cycle advances with the movement, step by step)
+    simulate(seconds, () => {
+      figure.update(player, STEP);
+      return groundDirection({ x, y });
+    });
+    update(0);
     renderer.render(world.scene, camera);
     return { x: Math.round(player.x), y: Math.round(player.y), speed: Math.round(player.speed), grounded: player.grounded };
+  },
+  /** Point the camera at the player from a direction without moving the player (for pictures). */
+  shoot(cameraYaw, cameraPitch = -5, arm = 300) {
+    follow.yaw = cameraYaw;
+    follow.pitch = cameraPitch;
+    follow.arm = arm;
+    follow.update(player, 0);
+    figure.root.visible = true;
+    placeSun();
+    renderer.render(world.scene, camera);
+  },
+  /** Hold the game still (true) so a picture stays as placed, or let it run again (false). */
+  pause(on = true) {
+    paused = on;
   },
   /** Set the time of day at once (hours, e.g. 18.4). */
   setTime(hour) {
@@ -383,6 +419,9 @@ window.forestTest = {
     return sky.label;
   },
   sky,
+  get character() {
+    return character;
+  },
   renderer,
   scene: world.scene,
   move: MOVE,
