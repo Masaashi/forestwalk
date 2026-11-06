@@ -45,6 +45,35 @@ const BENCH_BOXES = [
 
 const color = (rgb) => new THREE.Color().setRGB(rgb[0], rgb[1], rgb[2]);
 
+/** A repeatable random number in [0, 1) for an index. */
+function hash(i) {
+  let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
+  h ^= h >>> 13;
+  h = Math.imul(h, 0xc2b2ae35);
+  h ^= h >>> 16;
+  return (h >>> 0) / 4294967296;
+}
+
+/** Time for the swaying grass, moved forward by the game every frame. */
+export const wind = { time: { value: 0 } };
+
+/** Makes the tops of a shape sway a little in the wind (each copy at its own pace), strength in meters. */
+function addWind(material, strength) {
+  material.onBeforeCompile = (shader) => {
+    shader.uniforms.windTime = wind.time;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nuniform float windTime;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vec3 windBase = instanceMatrix[3].xyz;
+        float windTop = clamp(position.y + 0.5, 0.0, 1.0);
+        float windWave = sin(windTime * 1.7 + windBase.x * 0.37 + windBase.z * 0.29) + 0.4 * sin(windTime * 3.1 + windBase.x * 1.3);
+        // (divided by the copy's size, so the sway is the same number of meters for every copy)
+        transformed.x += windWave * ${strength.toFixed(3)} * windTop / length(instanceMatrix[0].xyz);
+        transformed.z += windWave * ${(strength * 0.6).toFixed(3)} * windTop / length(instanceMatrix[2].xyz);`);
+  };
+  return material;
+}
+
 /**
  * Writes an Unreal transform into a Three.js matrix: position in cm, rotation as an Unreal
  * rotator in degrees (pitch, yaw, roll), scale relative to a 1 m shape (Unreal's 100 cm shapes).
@@ -70,12 +99,13 @@ export function setUnrealMatrix(target, x, y, z, pitch, yaw, roll, sx, sy, sz) {
 
 /** Many copies of one shape in one draw call. */
 class InstanceBatch {
-  constructor(geometry, material, { castShadow = false, receiveShadow = false } = {}) {
+  constructor(geometry, material, { castShadow = false, receiveShadow = false, variation = 0 } = {}) {
     this.geometry = geometry;
     this.material = material;
     this.matrices = [];
     this.castShadow = castShadow;
     this.receiveShadow = receiveShadow;
+    this.variation = variation; // how much lighter or darker each copy may be (0.1 = 10%)
   }
 
   add(x, y, z, pitch, yaw, roll, sx, sy, sz) {
@@ -86,6 +116,18 @@ class InstanceBatch {
     const mesh = new THREE.InstancedMesh(this.geometry, this.material, Math.max(1, this.matrices.length));
     mesh.name = name;
     this.matrices.forEach((m, i) => mesh.setMatrixAt(i, m));
+    if (this.variation > 0) {
+      // Each copy a little lighter or darker, and a touch more yellow or blue-green
+      const c = new THREE.Color();
+      this.matrices.forEach((_, i) => {
+        const a = hash(i * 2 + 1) * 2 - 1;
+        const b = hash(i * 2 + 2) * 2 - 1;
+        const light = 1 + a * this.variation;
+        c.setRGB(light * (1 + b * this.variation * 0.5), light, light * (1 - b * this.variation * 0.5));
+        mesh.setColorAt(i, c);
+      });
+      mesh.instanceColor.needsUpdate = true;
+    }
     mesh.count = this.matrices.length;
     mesh.castShadow = this.castShadow;
     mesh.receiveShadow = this.receiveShadow;
@@ -176,60 +218,9 @@ function buildStreamRibbon(layout) {
   return geometry;
 }
 
-function buildSky() {
-  // A big dome: pale near the horizon, deeper blue overhead
-  const material = new THREE.ShaderMaterial({
-    side: THREE.BackSide,
-    depthWrite: false,
-    fog: false,
-    uniforms: {
-      horizon: { value: new THREE.Color().setRGB(0.55, 0.68, 0.85) },
-      zenith: { value: new THREE.Color().setRGB(0.12, 0.30, 0.70) },
-    },
-    vertexShader: `
-      varying vec3 vDir;
-      void main() {
-        vDir = normalize(position);
-        vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-        gl_Position = p.xyww;
-      }`,
-    fragmentShader: `
-      uniform vec3 horizon;
-      uniform vec3 zenith;
-      varying vec3 vDir;
-      void main() {
-        float t = pow(clamp(vDir.y, 0.0, 1.0), 0.6);
-        gl_FragColor = vec4(mix(horizon, zenith, t), 1.0);
-        #include <tonemapping_fragment>
-        #include <colorspace_fragment>
-      }`,
-  });
-  const sky = new THREE.Mesh(new THREE.SphereGeometry(1000, 24, 12), material);
-  sky.name = 'Sky';
-  sky.frustumCulled = false;
-  sky.renderOrder = -1;
-  return { sky, horizon: material.uniforms.horizon.value };
-}
-
 /** Builds the whole forest scene. Returns the scene and the things the game needs. */
 export function buildWorld(layout) {
-  const scene = new THREE.Scene();
-  const { sky, horizon } = buildSky();
-  scene.add(sky);
-  scene.fog = new THREE.FogExp2(horizon.clone(), 0.011);
-
-  // Light: morning sun (about 10 o'clock, like the Unreal level) and the sky
-  const sunDirection = new THREE.Vector3(-0.55, 0.62, 0.56).normalize();
-  const sun = new THREE.DirectionalLight(new THREE.Color().setRGB(1.0, 0.93, 0.82), 3.2);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const shadowReach = 35;
-  Object.assign(sun.shadow.camera, { left: -shadowReach, right: shadowReach, top: shadowReach, bottom: -shadowReach, near: 1, far: 160 });
-  sun.shadow.bias = -0.0005;
-  sun.shadow.normalBias = 0.03;
-  scene.add(sun, sun.target);
-  const skyLight = new THREE.HemisphereLight(new THREE.Color().setRGB(0.55, 0.7, 1.0), new THREE.Color().setRGB(0.12, 0.14, 0.06), 1.3);
-  scene.add(skyLight);
+  const scene = new THREE.Scene(); // the sky, sun and fog come from sky.js
 
   scene.add(buildGround(layout));
 
@@ -283,15 +274,15 @@ export function buildWorld(layout) {
   const box = new THREE.BoxGeometry(1, 1, 1);
   const lambert = (rgb, extra = {}) => new THREE.MeshLambertMaterial({ color: color(rgb), ...extra });
 
-  const trunks = new InstanceBatch(trunkShape, lambert(COLORS.trunk), { castShadow: true, receiveShadow: true });
-  const coniferLeaves = new InstanceBatch(cone, lambert(COLORS.conifer), { castShadow: true, receiveShadow: true });
-  const broadLeaves = new InstanceBatch(sphere, lambert(COLORS.broadleaf), { castShadow: true, receiveShadow: true });
-  const farConifers = new InstanceBatch(lowCone, lambert(COLORS.conifer));
-  const farBroadleaves = new InstanceBatch(farSphere, lambert(COLORS.broadleaf));
-  const rocks = new InstanceBatch(rockShape, lambert(COLORS.rock, { flatShading: true }), { castShadow: true, receiveShadow: true });
+  const trunks = new InstanceBatch(trunkShape, lambert(COLORS.trunk), { castShadow: true, receiveShadow: true, variation: 0.15 });
+  const coniferLeaves = new InstanceBatch(cone, lambert(COLORS.conifer), { castShadow: true, receiveShadow: true, variation: 0.14 });
+  const broadLeaves = new InstanceBatch(sphere, lambert(COLORS.broadleaf), { castShadow: true, receiveShadow: true, variation: 0.16 });
+  const farConifers = new InstanceBatch(lowCone, lambert(COLORS.conifer), { variation: 0.12 });
+  const farBroadleaves = new InstanceBatch(farSphere, lambert(COLORS.broadleaf), { variation: 0.12 });
+  const rocks = new InstanceBatch(rockShape, lambert(COLORS.rock, { flatShading: true }), { castShadow: true, receiveShadow: true, variation: 0.15 });
   const stones = new InstanceBatch(pebbleShape, lambert(COLORS.streamStone, { flatShading: true }));
-  const grass = new InstanceBatch(tuftShape, lambert(COLORS.grass));
-  const ferns = new InstanceBatch(tuftShape, lambert(COLORS.fern), { receiveShadow: true });
+  const grass = new InstanceBatch(tuftShape, addWind(lambert(COLORS.grass), 0.04), { variation: 0.22 });
+  const ferns = new InstanceBatch(tuftShape, addWind(lambert(COLORS.fern), 0.025), { receiveShadow: true, variation: 0.18 });
   const logs = new InstanceBatch(logShape, lambert(COLORS.log), { castShadow: true, receiveShadow: true });
   const wood = new InstanceBatch(box, lambert(COLORS.bridge), { castShadow: true, receiveShadow: true });
 
@@ -360,5 +351,5 @@ export function buildWorld(layout) {
     scene.add(batch.build(name));
   }
 
-  return { scene, sun, sunDirection, trunkColliders };
+  return { scene, trunkColliders };
 }

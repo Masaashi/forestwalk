@@ -4,7 +4,8 @@
 import * as THREE from 'three';
 import { FOREST_RULES } from './rules.js';
 import { ForestLayout, distanceToLine } from './layout.js';
-import { buildWorld, CM } from './world.js';
+import { buildWorld, CM, wind } from './world.js';
+import { ForestSky } from './sky.js';
 import { PlayerMovement, buildFigure, MOVE } from './player.js';
 import { FollowCamera } from './followCamera.js';
 import { Controls } from './controls.js';
@@ -22,7 +23,9 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'hi
 const pixelRatio = Number(params.get('dpr')) || Math.min(window.devicePixelRatio, 2);
 renderer.setPixelRatio(pixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
+// (?tone=aces / neutral / agx to compare)
+renderer.toneMapping = { aces: THREE.ACESFilmicToneMapping, neutral: THREE.NeutralToneMapping, agx: THREE.AgXToneMapping }[params.get('tone')]
+  ?? THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.0;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -48,11 +51,36 @@ const ui = {
 };
 const controls = new Controls(renderer.domElement, ui);
 
+// Time of day: starts at 10:00 like the Unreal level (?time=18.5 to start at another hour)
+const sky = new ForestSky(world.scene, renderer);
+sky.setTime(Number(params.get('time')) || 10);
+const timeButton = document.getElementById('time');
+const TIMES = [6.5, 12, 18.4, 21.5]; // morning (with mist), noon, sunset, night
+let timeGoal = null;
+timeButton.textContent = sky.label;
+timeButton.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  e.stopPropagation();
+  // Go on to the next time of day, letting the hours pass quickly on the way
+  const next = TIMES.find((t) => t > sky.hour + 0.01) ?? TIMES[0] + 24;
+  timeGoal = next;
+});
+
+function advanceTime(dt) {
+  if (timeGoal === null) return;
+  let hour = sky.hour;
+  if (timeGoal - hour > 24) timeGoal -= 24;
+  if (timeGoal < hour) hour -= 24; // passing midnight
+  hour = Math.min(timeGoal, hour + dt * 4); // four hours a second
+  sky.setTime(hour);
+  if (hour >= timeGoal) timeGoal = null;
+  timeButton.textContent = sky.label;
+}
+
 // The sun's shadow covers the area around the player
 function placeSun() {
   const focus = new THREE.Vector3(player.x * CM, player.z * CM, player.y * CM);
-  world.sun.target.position.copy(focus);
-  world.sun.position.copy(focus).addScaledVector(world.sunDirection, 80);
+  sky.follow(focus, camera);
 }
 
 const STEP = 1 / 60; // movement runs in fixed steps, so it acts the same at any frame rate
@@ -77,6 +105,8 @@ function update(dt) {
   }
   figure.update(player, dt);
   follow.update(player, dt);
+  advanceTime(dt);
+  wind.time.value += dt;
   placeSun();
 }
 
@@ -344,5 +374,16 @@ window.forestTest = {
     renderer.render(world.scene, camera);
     return { x: Math.round(player.x), y: Math.round(player.y), speed: Math.round(player.speed), grounded: player.grounded };
   },
+  /** Set the time of day at once (hours, e.g. 18.4). */
+  setTime(hour) {
+    sky.setTime(hour);
+    timeButton.textContent = sky.label;
+    update(0);
+    renderer.render(world.scene, camera);
+    return sky.label;
+  },
+  sky,
+  renderer,
+  scene: world.scene,
   move: MOVE,
 };

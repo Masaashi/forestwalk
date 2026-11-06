@@ -41,6 +41,12 @@
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); touch-action: none;
   }
   #jump.pressed { background: rgba(255, 255, 255, 0.45); }
+  #time {
+    position: fixed; left: calc(12px + env(safe-area-inset-left)); top: 12px; padding: 6px 12px;
+    border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.3);
+    color: #fff; font-size: 14px; font-weight: 600; touch-action: none;
+  }
+  #debug { top: 52px; }
   #fullscreen {
     position: fixed; right: calc(12px + env(safe-area-inset-right)); top: 12px; padding: 6px 10px;
     border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.3);
@@ -70,6 +76,7 @@
 <div id="app"></div>
 <div id="stick" hidden><div id="knob"></div></div>
 <button id="jump" type="button">ジャンプ</button>
+<button id="time" type="button">昼 10:00</button>
 <button id="fullscreen" type="button" hidden>全画面</button>
 <div id="hint">左の指で歩く ・ 右の指で見回す</div>
 <div id="debug" hidden></div>
