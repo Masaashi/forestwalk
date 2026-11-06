@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Forest Layout Check</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, Menlo, monospace; margin: 16px; background: #fff; color: #111; }
+  .ok { color: #0a7a2f; } .warn { color: #a86b00; } .bad { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>森の配置: UE と Web の比べ</h1>
+<p>UE が書き出した <code>ue_layout.json</code>（-ForestDumpLayout）と、Web 版の森のルールが作る配置を比べます。</p>
+<pre id="out">計算中...</pre>
+<script type="module">
+import { ForestLayout } from '../src/layout.js';
+import { RandomStream } from '../src/random.js';
+
+const out = document.getElementById('out');
+const lines = [];
+const result = {};
+const say = (text, cls = '') => lines.push(cls ? `<span class="${cls}">${text}</span>` : text);
+
+const ue = await fetch('ue_layout.json').then((r) => r.json());
+const started = performance.now();
+const web = new ForestLayout(ue.rules);
+const ms = performance.now() - started;
+result.generateMs = Math.round(ms);
+say(`Web で森を作る時間: ${ms.toFixed(0)} ms`);
+
+// 1. Random numbers
+const rand = new RandomStream(ue.rules.Seed);
+const fractions = Array.from({ length: 8 }, () => rand.fraction());
+const ranges = Array.from({ length: 8 }, () => rand.randRange(0, 9));
+const fracOk = fractions.every((f, i) => Math.abs(f - ue.randomFractions[i]) < 1e-8);
+const rangeOk = ranges.every((v, i) => v === ue.randomRanges[i]);
+result.random = fracOk && rangeOk;
+say(`乱数: ${fracOk && rangeOk ? '同じ' : 'ちがう'} (${fractions.slice(0, 3).map((f) => f.toFixed(9)).join(', ')} ...)`, result.random ? 'ok' : 'bad');
+
+// 2. Lines
+function compareLine(name, a, b) {
+  let worst = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) worst = Math.max(worst, Math.hypot(a[i].x - b[i][0], a[i].y - b[i][1]));
+  const same = a.length === b.length && worst < 0.01;
+  say(`${name}: 点の数 Web ${a.length} / UE ${b.length}、いちばん大きいずれ ${worst.toFixed(4)} cm`, same ? 'ok' : 'bad');
+  return same;
+}
+result.path = compareLine('小道', web.pathLine, ue.path);
+result.stream = compareLine('小川', web.streamLine, ue.stream);
+result.sidePaths = web.sideLines.length === ue.sidePaths.length
+  && web.sideLines.every((side, i) => compareLine(`池への小道 ${i + 1}`, side, ue.sidePaths[i]));
+
+// 3. Bridges, ponds, benches (positions; heights depend on the hills)
+function comparePoints(name, webList, ueList, toXY) {
+  let worst = 0;
+  webList.forEach((item, i) => {
+    if (ueList[i]) worst = Math.max(worst, Math.hypot(toXY(item)[0] - ueList[i][0], toXY(item)[1] - ueList[i][1]));
+  });
+  const same = webList.length === ueList.length && worst < 0.01;
+  say(`${name}: Web ${webList.length} / UE ${ueList.length}、位置のずれ ${worst.toFixed(4)} cm`, same ? 'ok' : 'bad');
+  return same;
+}
+result.bridges = comparePoints('橋', web.bridges, ue.bridges, (b) => [b.x, b.y]);
+result.ponds = comparePoints('池', web.ponds, ue.ponds, (p) => [p.x, p.y]);
+result.benches = comparePoints('ベンチ', web.benches, ue.benches, (b) => [b.x, b.y]);
+
+// 4. Trees: how many of UE's trees stand at the same spot in the web forest
+const key = (x, y) => `${Math.round(x)},${Math.round(y)}`;
+const webSpots = new Set(web.trees.map((t) => key(t.x, t.y)));
+const candidateSpots = new Set(web.treeCandidates.map((p) => key(p.x, p.y)));
+const ueTrees = ue.trees;
+const sameSpot = ueTrees.filter((t) => webSpots.has(key(t[0], t[1]))).length;
+const onCandidate = ueTrees.filter((t) => candidateSpots.has(key(t[0], t[1]))).length;
+result.trees = { web: web.trees.length, ue: ueTrees.length, sameSpot, onCandidate };
+say(`木: Web ${web.trees.length} 本 / UE ${ueTrees.length} 本`);
+say(`  UE の木のうち、Web の木の候補の場所にあるもの: ${onCandidate} / ${ueTrees.length}`, onCandidate === ueTrees.length ? 'ok' : 'bad');
+say(`  UE の木のうち、Web でも同じ場所に木があるもの: ${sameSpot} / ${ueTrees.length} (${(100 * sameSpot / ueTrees.length).toFixed(1)}%)`,
+  sameSpot / ueTrees.length > 0.8 ? 'ok' : 'warn');
+
+// 5. Everything else (counts)
+const counts = [
+  ['岩', web.rocks.length, ue.rocks.length],
+  ['倒木', web.logs.length, ue.logs.length],
+  ['草', web.grass.length, ue.grassCount],
+  ['シダ', web.ferns.length, ue.fernCount],
+  ['川の石', web.streamStones.length, ue.streamStoneCount],
+  ['地面の格子の数', web.gridCount, ue.gridCount],
+];
+result.counts = {};
+for (const [name, w, u] of counts) {
+  result.counts[name] = [w, u];
+  const diff = u ? Math.abs(w - u) / u : 0;
+  say(`${name}: Web ${w} / UE ${u}`, diff < 0.15 ? 'ok' : 'warn');
+}
+
+// 6. Ground height (hills use a different noise table, so they differ a little)
+let sumDiff = 0;
+let maxDiff = 0;
+for (const [x, y, z] of ue.groundSamples) {
+  const d = Math.abs(web.groundZ(x, y) - z);
+  sumDiff += d;
+  maxDiff = Math.max(maxDiff, d);
+}
+result.ground = { meanCm: sumDiff / ue.groundSamples.length, maxCm: maxDiff };
+say(`地面の高さのちがい（441 点）: 平均 ${(sumDiff / ue.groundSamples.length).toFixed(1)} cm、最大 ${maxDiff.toFixed(1)} cm（丘のノイズ表がちがうため）`);
+
+out.innerHTML = lines.join('\n');
+window.compareResult = result;
+</script>
+</body>
+</html>

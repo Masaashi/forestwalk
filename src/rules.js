@@ -1,0 +1,58 @@
+// The forest rules. Same names and meanings as FForestRules in Source/Forest/ForestRules.h:
+// if a rule changes there, change it here too (and the other way round).
+// All distances are in centimeters, like Unreal.
+
+export const DEFAULT_RULES = {
+  Seed: 1,
+  PatchSize: 10000,
+  OuterMargin: 15000,
+  BackdropWidth: 5000,
+  EdgeDetailWidth: 1500,
+  GroundResolution: 50,
+  HillHeight: 250,
+  HillSize: 3500,
+  PathWidth: 200,
+  PathWander: 1500,
+  StreamWidth: 250,
+  StreamDepth: 90,
+  StreamBankWidth: 150,
+  ValleyWidth: 1500,
+  StreamWander: 1800,
+  BendSpacing: 6000,
+  TreeSpacing: 500,
+  TreeClearance: 200,
+  TreeHeightMin: 1200,
+  TreeHeightMax: 2200,
+  BroadleafRatio: 0.2,
+  ClearingAmount: 0.15,
+  RockCount: 70,
+  RockStreamShare: 0.6,
+  RockSizeMin: 30,
+  RockSizeMax: 140,
+  GrassSpacing: 60,
+  GrassDensity: 0.7,
+  GrassShade: 0.6,
+  GrassDrawDistance: 3500,
+  FallenLogCount: 14,
+  FernSpacing: 120,
+  FernDensity: 0.5,
+  StreamStoneCount: 160,
+  bPond: true,
+  PondCount: 1,
+  PondRadius: 700,
+  PondDepth: 120,
+  bBench: true,
+  SidePathWidth: 120,
+};
+
+// The forest of the Unreal level (LvlForestPatch), made 100 m across for phones.
+export const FOREST_RULES = {
+  ...DEFAULT_RULES,
+  PatchSize: 10000,
+  GroundResolution: 100,
+  PathWander: 7000,
+  StreamWander: 8000,
+  BendSpacing: 7000,
+  GrassSpacing: 80,
+  PondCount: 3,
+};
