@@ -262,7 +262,7 @@ export function buildWorld(layout) {
 
   // Shapes, all 1 m across and centered like Unreal's basic shapes
   // (kept low in detail for phones; ends that are never seen are left open)
-  const trunkShape = new THREE.CylinderGeometry(0.5, 0.5, 1, 8, 1, true); // top hidden in the leaves, bottom in the ground
+  const trunkShape = new THREE.CylinderGeometry(0.5, 0.5, 1, 8); // (closed: the top shows from a climbed tree)
   const logShape = new THREE.CylinderGeometry(0.5, 0.5, 1, 8);
   const cone = new THREE.ConeGeometry(0.5, 1, 8); // the base shows when looking up from under a tree
   const sphere = new THREE.SphereGeometry(0.5, 10, 8);
@@ -287,19 +287,22 @@ export function buildWorld(layout) {
   const wood = new InstanceBatch(box, lambert(COLORS.bridge), { castShadow: true, receiveShadow: true });
 
   const trunkColliders = [];
-  for (const tree of layout.trees) {
+  const canopyOf = new Map(); // tree index -> where its leaves are in the leaf batches
+  layout.trees.forEach((tree, treeIndex) => {
     const h = tree.height;
     if (tree.backdrop) {
       // One simple shape reaching down to the ground
       if (tree.broadleaf) farBroadleaves.add(tree.x, tree.y, tree.z + h * 0.55, 0, tree.yaw, 0, h * 0.0056, h * 0.0056, h * 0.009);
       else farConifers.add(tree.x, tree.y, tree.z + h * 0.5, 0, tree.yaw, 0, h * 0.003 * tree.slenderness, h * 0.003 * tree.slenderness, h * 0.01);
-      continue;
+      return;
     }
     const trunkHeight = h * (tree.broadleaf ? 0.6 : 0.92);
     const sink = 30; // push the trunk into the ground so it never floats on slopes
     const d = (tree.trunkRadius * 2) / 100;
     trunks.add(tree.x, tree.y, tree.z + (trunkHeight - sink) * 0.5, 0, tree.yaw, 0, d, d, (trunkHeight + sink) / 100);
     trunkColliders.push({ x: tree.x, y: tree.y, radius: tree.trunkRadius, top: tree.z + trunkHeight });
+    const leaves = tree.broadleaf ? broadLeaves : coniferLeaves;
+    const firstLeaf = leaves.matrices.length;
     if (!tree.broadleaf) {
       for (const [start, end, radius] of CONE_LAYERS) {
         const bottom = h * start;
@@ -315,7 +318,8 @@ export function buildWorld(layout) {
       const oy = r * 0.45 * Math.sin(yawRad) + r * 0.2 * Math.cos(yawRad);
       broadLeaves.add(tree.x + ox, tree.y + oy, tree.z + h * 0.82, 0, tree.yaw, 0, (r * 1.3) / 100, (r * 1.3) / 100, (r * 1.1) / 100);
     }
-  }
+    canopyOf.set(treeIndex, { name: tree.broadleaf ? 'broadLeaves' : 'coniferLeaves', first: firstLeaf, count: leaves.matrices.length - firstLeaf });
+  });
 
   for (const rock of layout.rocks) rocks.add(rock.x, rock.y, rock.z, rock.pitch, rock.yaw, rock.roll, rock.sx, rock.sy, rock.sz);
   for (const stone of layout.streamStones) stones.add(stone.x, stone.y, stone.z, 0, stone.yaw, 0, stone.sx, stone.sy, stone.sz);
@@ -347,9 +351,46 @@ export function buildWorld(layout) {
   }
 
   const batches = { trunks, coniferLeaves, broadLeaves, farConifers, farBroadleaves, rocks, stones, grass, ferns, logs, wood };
+  const meshes = {};
   for (const [name, batch] of Object.entries(batches)) {
-    scene.add(batch.build(name));
+    meshes[name] = batch.build(name);
+    scene.add(meshes[name]);
   }
 
-  return { scene, trunkColliders };
+  // See-through leaves for the tree being climbed, so the player stays visible inside them
+  const seeThrough = {
+    coniferLeaves: new THREE.InstancedMesh(cone, lambert(COLORS.conifer, { transparent: true, opacity: 0.3, depthWrite: false }), 8),
+    broadLeaves: new THREE.InstancedMesh(sphere, lambert(COLORS.broadleaf, { transparent: true, opacity: 0.3, depthWrite: false }), 8),
+  };
+  for (const mesh of Object.values(seeThrough)) {
+    mesh.count = 0;
+    mesh.name = 'SeeThroughLeaves';
+    scene.add(mesh);
+  }
+  const hidden = new THREE.Matrix4().makeScale(0, 0, 0);
+  let current = null;
+  /** Makes one tree's leaves see-through (tree index), or puts them back (null). */
+  function setSeeThrough(treeIndex) {
+    if (current) {
+      const mesh = meshes[current.name];
+      for (let i = 0; i < current.count; i++) mesh.setMatrixAt(current.first + i, batches[current.name].matrices[current.first + i]);
+      mesh.instanceMatrix.needsUpdate = true;
+      seeThrough[current.name].count = 0;
+      current = null;
+    }
+    const ref = treeIndex === null ? null : canopyOf.get(treeIndex);
+    if (!ref) return;
+    const mesh = meshes[ref.name];
+    const copies = seeThrough[ref.name];
+    for (let i = 0; i < ref.count; i++) {
+      copies.setMatrixAt(i, batches[ref.name].matrices[ref.first + i]);
+      mesh.setMatrixAt(ref.first + i, hidden);
+    }
+    copies.count = ref.count;
+    copies.instanceMatrix.needsUpdate = true;
+    mesh.instanceMatrix.needsUpdate = true;
+    current = ref;
+  }
+
+  return { scene, trunkColliders, setSeeThrough };
 }

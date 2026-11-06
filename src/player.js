@@ -18,6 +18,12 @@ export const MOVE = {
   gravity: 980,
   maxStep: 45, // can step up this much (logs, rocks, the bridge)
   turnRate: 500, // degrees per second, turning toward where it walks
+  climbSpeed: 160, // up and down a trunk, cm/s
+  climbAroundSpeed: 140, // around a trunk, cm/s
+  climbReach: 80, // how far from the body a trunk can be grabbed
+  jumpOffSpeed: 500, // pushing away from the trunk
+  jumpOffUp: 350,
+  brakingAfterJumpOff: 150, // weak air braking until landing, so the push carries
 };
 
 const FOOT_SAMPLES = [[0, 0], [22, 0], [-22, 0], [0, 22], [0, -22]];
@@ -126,6 +132,19 @@ class Buckets {
 export class PlayerMovement {
   constructor(layout, trunks) {
     this.layout = layout;
+    // Trees that can be climbed: every tree in the walkable area, up to a part of its height
+    this.climbable = [];
+    layout.trees.forEach((tree, index) => {
+      if (tree.backdrop) return;
+      this.climbable.push({
+        index,
+        x: tree.x,
+        y: tree.y,
+        z: tree.z,
+        radius: tree.trunkRadius,
+        top: tree.height * (tree.broadleaf ? 0.55 : 0.8),
+      });
+    });
     this.trunks = new Buckets(trunks, (t) => t.radius + MOVE.capsuleRadius);
     this.surfaces = new Buckets(buildSurfaces(layout), (s) => s.reach + 30);
     this.edge = layout.halfSize() - MOVE.capsuleRadius; // the invisible walls at the walkable edge
@@ -142,6 +161,76 @@ export class PlayerMovement {
     this.grounded = true;
     this.yaw = yaw; // facing, Unreal degrees (90 = north, along +Y)
     this.distance = 0;
+    this.climbing = null; // the trunk being climbed
+    this.climbHeight = 0; // feet above the trunk base
+    this.climbAngle = 0; // where around the trunk (radians)
+    this.climbCycle = 0; // arm and leg cycle for the climbing pose
+    this.jumpedOff = false;
+  }
+
+  /** The nearest trunk within reach, or null. */
+  trunkInReach() {
+    let best = null;
+    let bestGap = MOVE.capsuleRadius + MOVE.climbReach;
+    for (const trunk of this.climbable) {
+      const gap = Math.hypot(this.x - trunk.x, this.y - trunk.y) - trunk.radius;
+      if (gap <= bestGap) {
+        bestGap = gap;
+        best = trunk;
+      }
+    }
+    return best;
+  }
+
+  /** Grab the nearest trunk (E key / climb button). Returns true if climbing started. */
+  startClimb() {
+    const trunk = this.climbing ? null : this.trunkInReach();
+    if (!trunk) return false;
+    this.climbing = trunk;
+    this.climbHeight = THREE.MathUtils.clamp(this.z - trunk.z, 0, trunk.top);
+    this.climbAngle = Math.atan2(this.y - trunk.y, this.x - trunk.x);
+    this.vx = 0;
+    this.vy = 0;
+    this.vz = 0;
+    this.grounded = false;
+    this.climbStep(0, 0, 0);
+    return true;
+  }
+
+  /** Let go (falls), or jump off pushing away from the trunk. */
+  stopClimb(jumpOff) {
+    const trunk = this.climbing;
+    if (!trunk) return;
+    this.climbing = null;
+    this.grounded = false;
+    if (jumpOff) {
+      const dx = this.x - trunk.x;
+      const dy = this.y - trunk.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.vx = (dx / d) * MOVE.jumpOffSpeed;
+      this.vy = (dy / d) * MOVE.jumpOffSpeed;
+      this.vz = MOVE.jumpOffUp;
+      this.jumpedOff = true;
+    }
+  }
+
+  /** While climbing: up = forward on the stick, around = right / left. */
+  climbStep(dt, right, forward) {
+    const trunk = this.climbing;
+    const distance = trunk.radius + MOVE.capsuleRadius + 4;
+    const oldHeight = this.climbHeight;
+    this.climbHeight = THREE.MathUtils.clamp(this.climbHeight + forward * MOVE.climbSpeed * dt, 0, trunk.top);
+    // Facing the trunk, moving right goes clockwise around it
+    this.climbAngle -= right * (MOVE.climbAroundSpeed / distance) * dt;
+    const moved = Math.abs(this.climbHeight - oldHeight) + Math.abs(right) * MOVE.climbAroundSpeed * dt;
+    this.climbCycle += moved / 90; // arms and legs: about 90 cm per left+right cycle
+    this.x = trunk.x + Math.cos(this.climbAngle) * distance;
+    this.y = trunk.y + Math.sin(this.climbAngle) * distance;
+    this.z = trunk.z + this.climbHeight;
+    this.yaw = (THREE.MathUtils.radToDeg(this.climbAngle) + 180 + 360) % 360;
+    this.distance += moved;
+    // Climbing down to the ground puts the feet back on it
+    if (this.climbHeight <= 0.5 && forward < 0) this.stopClimb(false);
   }
 
   /** Height of whatever is under one point: the ground, or a rock / log / bridge / bench on it. */
@@ -194,7 +283,13 @@ export class PlayerMovement {
    * One step of movement. dirX/dirY: where the stick points on the ground (length 0..1),
    * jump: the jump button was pressed.
    */
-  step(dt, dirX, dirY, jump) {
+  step(dt, dirX, dirY, jump, climbInput = null) {
+    if (this.climbing) {
+      // Jump pushes off the trunk; otherwise the stick climbs (given relative to the body)
+      if (jump) this.stopClimb(true);
+      else this.climbStep(dt, climbInput?.x ?? 0, climbInput?.y ?? 0);
+      return;
+    }
     let amount = Math.hypot(dirX, dirY);
     if (amount > 1) {
       dirX /= amount;
@@ -206,9 +301,10 @@ export class PlayerMovement {
     const targetY = amount > 0.05 ? (dirY / amount) * targetSpeed : 0;
 
     // Speed up toward where the stick points, or slow down when it is let go
+    const fallingBraking = this.jumpedOff ? MOVE.brakingAfterJumpOff : MOVE.brakingFalling;
     const accel = targetSpeed > 0
       ? MOVE.acceleration * (this.grounded ? 1 : MOVE.airControl)
-      : (this.grounded ? MOVE.braking : MOVE.brakingFalling);
+      : (this.grounded ? MOVE.braking : fallingBraking);
     const ddx = targetX - this.vx;
     const ddy = targetY - this.vy;
     const gap = Math.hypot(ddx, ddy);
@@ -263,6 +359,7 @@ export class PlayerMovement {
         this.z = floor;
         this.vz = 0;
         this.grounded = true;
+        this.jumpedOff = false;
       }
     }
 

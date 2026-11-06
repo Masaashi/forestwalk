@@ -61,6 +61,7 @@ const ui = {
   stick: document.getElementById('stick'),
   knob: document.getElementById('knob'),
   jump: document.getElementById('jump'),
+  climb: document.getElementById('climb'),
   hint: document.getElementById('hint'),
 };
 const controls = new Controls(renderer.domElement, ui);
@@ -106,17 +107,43 @@ function groundDirection(move) {
   return { x: d.forwardX * move.y + d.rightX * move.x, y: d.forwardY * move.y + d.rightY * move.x };
 }
 
+// Climbing: the climb button (E key) grabs the nearest trunk, or lets go while climbing
+let climbTree = null; // the tree whose leaves are see-through
+function toggleClimb() {
+  if (player.climbing) player.stopClimb(false);
+  else player.startClimb();
+}
+let climbCheckAt = 0;
+function updateClimbButton(now) {
+  if (now < climbCheckAt) return;
+  climbCheckAt = now + 0.15;
+  const show = player.climbing || (player.grounded && player.trunkInReach() !== null);
+  ui.climb.hidden = !show;
+  ui.climb.textContent = player.climbing ? 'はなす' : '登る';
+}
+let clock = 0;
+
 function update(dt) {
+  clock += dt;
   const look = controls.takeLook();
   follow.addLook(look.yaw, look.pitch);
-  const dir = groundDirection(controls.move());
+  const move = controls.move();
+  const dir = groundDirection(move);
   let jump = controls.takeJump();
+  if (controls.takeClimb()) toggleClimb();
   pending = Math.min(pending + dt, 0.25);
   while (pending >= STEP) {
-    player.step(STEP, dir.x, dir.y, jump);
+    player.step(STEP, dir.x, dir.y, jump, move);
     jump = false;
     pending -= STEP;
   }
+  // The climbed tree's leaves turn see-through
+  const treeIndex = player.climbing ? player.climbing.index : null;
+  if (treeIndex !== climbTree) {
+    world.setSeeThrough(treeIndex);
+    climbTree = treeIndex;
+  }
+  updateClimbButton(clock);
   figure.update(player, dt);
   follow.update(player, dt);
   // When a trunk pushes the camera right up to the body, hide the body instead of looking inside it
@@ -373,6 +400,52 @@ window.forestTest = {
       return { x: dir.x, y: dir.y, jump: random() < 0.004 };
     });
     const result = { walkedM: Math.round((player.distance - startDistance) / 100), trapped, atEdge };
+    player.reset();
+    return result;
+  },
+  /**
+   * Climb like the Unreal climb test: stand by the tree nearest the start, grab it, climb to the
+   * top, go around for 2 s, jump off, land.
+   */
+  climb() {
+    player.reset();
+    const start = { x: player.x, y: player.y };
+    let tree = null;
+    let best = Infinity;
+    for (const t of player.climbable) {
+      const d = Math.hypot(t.x - start.x, t.y - start.y);
+      if (d < best) {
+        best = d;
+        tree = t;
+      }
+    }
+    const ox = (start.x - tree.x) / best;
+    const oy = (start.y - tree.y) / best;
+    player.reset(tree.x + ox * (tree.radius + 70), tree.y + oy * (tree.radius + 70), THREE.MathUtils.radToDeg(Math.atan2(-oy, -ox)));
+    const result = { treeHeightM: +(tree.top / 100).toFixed(1), grabbed: player.startClimb() };
+    if (!result.grabbed) return result;
+    let t = 0;
+    while (player.climbing && player.climbHeight < tree.top - 1 && t < 30) {
+      player.step(STEP, 0, 0, false, { x: 0, y: 1 });
+      t += STEP;
+    }
+    result.reachedTop = player.climbHeight >= tree.top - 1;
+    result.climbSeconds = +t.toFixed(1);
+    const before = { x: player.x, y: player.y };
+    for (let i = 0; i < 120; i++) player.step(STEP, 0, 0, false, { x: 1, y: 0 });
+    result.aroundCm = Math.round(Math.hypot(player.x - before.x, player.y - before.y));
+    result.stillClimbing = !!player.climbing;
+    const takeOff = { x: player.x, y: player.y };
+    player.step(STEP, 0, 0, true, null);
+    result.jumpedOff = !player.climbing;
+    t = 0;
+    while (!player.grounded && t < 8) {
+      player.step(STEP, 0, 0, false);
+      t += STEP;
+    }
+    result.landed = player.grounded;
+    result.landedM = +(Math.hypot(player.x - takeOff.x, player.y - takeOff.y) / 100).toFixed(1);
+    result.fallSeconds = +t.toFixed(1);
     player.reset();
     return result;
   },

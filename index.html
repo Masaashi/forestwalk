@@ -41,6 +41,13 @@
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); touch-action: none;
   }
   #jump.pressed { background: rgba(255, 255, 255, 0.45); }
+  /* Shows next to a tree that can be climbed */
+  #climb {
+    position: fixed; right: calc(124px + env(safe-area-inset-right)); bottom: calc(40px + env(safe-area-inset-bottom));
+    width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255, 230, 160, 0.8);
+    background: rgba(120, 80, 20, 0.35); color: #fff; font-size: 15px; font-weight: 700;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6); touch-action: none;
+  }
   #time {
     position: fixed; left: calc(12px + env(safe-area-inset-left)); top: 12px; padding: 6px 12px;
     border-radius: 8px; border: 1px solid rgba(255, 255, 255, 0.5); background: rgba(0, 0, 0, 0.3);
@@ -81,6 +88,7 @@
 <div id="app"></div>
 <div id="stick" hidden><div id="knob"></div></div>
 <button id="jump" type="button">ジャンプ</button>
+<button id="climb" type="button" hidden>登る</button>
 <button id="time" type="button">昼 10:00</button>
 <button id="fullscreen" type="button" hidden>全画面</button>
 <div id="hint">左の指で歩く ・ 右の指で見回す</div>

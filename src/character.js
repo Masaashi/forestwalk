@@ -105,6 +105,11 @@ export async function loadCharacter(url) {
     holder.position.y = 0;
     holder.updateMatrixWorld(true);
 
+    if (player.climbing) {
+      climbPose(player.climbCycle);
+      return;
+    }
+
     const ground = 1 - air;
     const s = walk * ground;
     // A little bounce while walking, more when running
@@ -140,6 +145,31 @@ export async function loadCharacter(url) {
       aim(`upperarm_${l}`, `lowerarm_${l}`, upperF, upperU, upperR * side);
       const lowerA = armSwing * ground + elbow * ground + 0.6 * air;
       aim(`lowerarm_${l}`, `hand_${l}`, Math.sin(lowerA), -Math.cos(lowerA) * ground + 0.2 * air, (0.08 * ground + 0.6 * air) * side);
+    }
+  }
+
+  const mixDir = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+  /**
+   * Holding on to a trunk (the same pose as ForestClimbAnimInstance.cpp): leaning in, hands
+   * reaching up in turn, the opposite knee coming up. Directions are (forward, up, right),
+   * forward being toward the trunk.
+   */
+  function climbPose(cycle) {
+    walk = 0;
+    air = 0;
+    const swing = 0.5 + 0.5 * Math.sin(cycle * 2 * Math.PI); // 1 = left hand high, right foot high
+    aim('spine_01', 'spine_05', ...mixDir([0, 1, 0], [1, 0, 0], 0.18));
+    aim('neck_01', 'head', 0.25, 1, 0); // looking up the trunk a little
+    for (const side of [-1, 1]) {
+      const l = side < 0 ? 'l' : 'r';
+      const high = side < 0 ? swing : 1 - swing;
+      aim(`upperarm_${l}`, `lowerarm_${l}`, ...mixDir([0.55, 0.15, 0.45 * side], [0.35, 0.95, 0.25 * side], high));
+      aim(`lowerarm_${l}`, `hand_${l}`, ...mixDir([0.9, 0.35, -0.25 * side], [0.45, 0.9, -0.15 * side], high));
+      const lift = side < 0 ? 1 - swing : swing;
+      aim(`thigh_${l}`, `calf_${l}`, ...mixDir([0.25, -0.95, 0.15 * side], [0.9, -0.25, 0.2 * side], lift));
+      aim(`calf_${l}`, `foot_${l}`, ...mixDir([0.1, -1, 0], [-0.25, -1, 0], lift));
+      aim(`foot_${l}`, `ball_${l}`, 1, -0.2, 0);
     }
   }
 

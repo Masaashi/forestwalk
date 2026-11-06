@@ -1,7 +1,7 @@
 // Controls for phones held sideways, and for a computer.
 // Left side of the screen: a stick appears where the thumb touches (walk).
 // Right side: drag to look around. Jump button at the bottom right.
-// Keyboard: WASD or arrow keys to walk, Space to jump, drag with the mouse to look.
+// Keyboard: WASD or arrow keys to walk, Space to jump, E to climb, drag with the mouse to look.
 
 const STICK_RADIUS = 56; // px the knob can move from the middle
 const LOOK_SPEED = 0.25; // degrees per px dragged
@@ -17,6 +17,7 @@ export class Controls {
     this.lookDX = 0;
     this.lookDY = 0;
     this.jumpQueued = false;
+    this.climbQueued = false;
     this.keys = new Set();
     this.used = false; // the player has touched anything (hides the hint)
 
@@ -31,6 +32,12 @@ export class Controls {
       this.used = true;
       ui.jump.classList.add('pressed');
     });
+    ui.climb.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.climbQueued = true;
+      this.used = true;
+    });
     const release = () => ui.jump.classList.remove('pressed');
     ui.jump.addEventListener('pointerup', release);
     ui.jump.addEventListener('pointercancel', release);
@@ -40,6 +47,7 @@ export class Controls {
       if (e.repeat) return;
       this.keys.add(e.code);
       if (e.code === 'Space') this.jumpQueued = true;
+      if (e.code === 'KeyE') this.climbQueued = true;
       this.used = true;
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -118,6 +126,12 @@ export class Controls {
     this.lookDX = 0;
     this.lookDY = 0;
     return look;
+  }
+
+  takeClimb() {
+    const climb = this.climbQueued;
+    this.climbQueued = false;
+    return climb;
   }
 
   takeJump() {
