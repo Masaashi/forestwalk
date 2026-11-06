@@ -1,13 +1,15 @@
-// Starts the web forest: makes the layout from the rules, builds the scene and draws it.
-// Step 1 (prototype): look around from a few fixed spots by dragging. Walking comes next.
+// Starts the web forest: makes the layout from the rules, builds the scene, and runs the
+// game: walk with the stick, look by dragging, jump with the button.
 
 import * as THREE from 'three';
 import { FOREST_RULES } from './rules.js';
-import { ForestLayout } from './layout.js';
+import { ForestLayout, distanceToLine } from './layout.js';
 import { buildWorld, CM } from './world.js';
+import { PlayerMovement, buildFigure, MOVE } from './player.js';
+import { FollowCamera } from './followCamera.js';
+import { Controls } from './controls.js';
 
 const params = new URLSearchParams(location.search);
-const loading = document.getElementById('loading');
 const debugBox = document.getElementById('debug');
 
 const startedAt = performance.now();
@@ -27,91 +29,55 @@ renderer.shadowMap.type = THREE.PCFShadowMap;
 document.getElementById('app').appendChild(renderer.domElement);
 
 const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 1500);
-
-/** Unreal position (cm, Z up) to Three.js (m, Y up). */
-const toThree = (x, y, z) => new THREE.Vector3(x * CM, z * CM, y * CM);
-const eyeHeight = 170;
-
-// A few fixed spots to look from (?view=path|forest|pond|overview)
-function viewpoint(name) {
-  const start = layout.pathStart;
-  const ahead = layout.pathLine.find((p) => p.y > start.y + 1000) ?? { x: start.x, y: start.y + 1000 };
-  switch (name) {
-    case 'overview':
-      return { from: new THREE.Vector3(-70, 45, -70), to: new THREE.Vector3(0, 0, 0) };
-    case 'forest': {
-      const from = toThree(1800, -2200, layout.groundZ(1800, -2200) + eyeHeight);
-      return { from, to: toThree(3200, 1500, layout.groundZ(3200, 1500) + eyeHeight + 100) };
-    }
-    case 'pond': {
-      const bench = layout.benches[0];
-      const pond = layout.ponds[0];
-      if (bench && pond) {
-        const dx = bench.x - pond.x;
-        const dy = bench.y - pond.y;
-        const len = Math.hypot(dx, dy);
-        const bx = bench.x + (dx / len) * 300;
-        const by = bench.y + (dy / len) * 300;
-        return {
-          from: toThree(bx, by, layout.groundZ(bx, by) + eyeHeight),
-          to: toThree(pond.x, pond.y, pond.waterZ + 60),
-        };
-      }
-      return viewpoint('path');
-    }
-    default:
-      return {
-        from: toThree(start.x, start.y, layout.groundZ(start.x, start.y) + eyeHeight),
-        to: toThree(ahead.x, ahead.y, layout.groundZ(ahead.x, ahead.y) + eyeHeight - 30),
-      };
-  }
-}
-
-const view = viewpoint(params.get('view') ?? 'path');
-camera.position.copy(view.from);
-const look = new THREE.Vector3().subVectors(view.to, view.from).normalize();
-let yaw = Math.atan2(look.x, look.z);
-let pitch = Math.asin(THREE.MathUtils.clamp(look.y, -1, 1));
-
-function applyLook() {
-  const cp = Math.cos(pitch);
-  camera.lookAt(camera.position.clone().add(new THREE.Vector3(Math.sin(yaw) * cp, Math.sin(pitch), Math.cos(yaw) * cp)));
-}
-applyLook();
-
-// Drag (finger or mouse) to look around
-let dragging = null;
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  dragging = { x: e.clientX, y: e.clientY };
-  renderer.domElement.setPointerCapture(e.pointerId);
-});
-renderer.domElement.addEventListener('pointermove', (e) => {
-  if (!dragging) return;
-  const speed = 0.005;
-  yaw -= (e.clientX - dragging.x) * speed;
-  pitch = THREE.MathUtils.clamp(pitch - (e.clientY - dragging.y) * speed, -1.2, 1.2);
-  dragging = { x: e.clientX, y: e.clientY };
-  applyLook();
-});
-renderer.domElement.addEventListener('pointerup', () => { dragging = null; });
-
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
 });
 
-// The sun's shadow covers the area in front of the camera
-const shadowFocus = new THREE.Vector3();
+const player = new PlayerMovement(layout, world.trunkColliders);
+const figure = buildFigure();
+world.scene.add(figure.root);
+const follow = new FollowCamera(camera, layout, world.trunkColliders);
+follow.yaw = player.yaw;
+const ui = {
+  stick: document.getElementById('stick'),
+  knob: document.getElementById('knob'),
+  jump: document.getElementById('jump'),
+  hint: document.getElementById('hint'),
+};
+const controls = new Controls(renderer.domElement, ui);
+
+// The sun's shadow covers the area around the player
 function placeSun() {
-  const forward = new THREE.Vector3();
-  camera.getWorldDirection(forward);
-  forward.y = 0;
-  forward.normalize();
-  shadowFocus.copy(camera.position).addScaledVector(forward, 15);
-  shadowFocus.y = layout.groundZ(shadowFocus.x / CM, shadowFocus.z / CM) * CM;
-  world.sun.target.position.copy(shadowFocus);
-  world.sun.position.copy(shadowFocus).addScaledVector(world.sunDirection, 80);
+  const focus = new THREE.Vector3(player.x * CM, player.z * CM, player.y * CM);
+  world.sun.target.position.copy(focus);
+  world.sun.position.copy(focus).addScaledVector(world.sunDirection, 80);
+}
+
+const STEP = 1 / 60; // movement runs in fixed steps, so it acts the same at any frame rate
+let pending = 0;
+
+/** Turns stick input (relative to the camera) into a direction on the ground. */
+function groundDirection(move) {
+  const d = follow.directions();
+  return { x: d.forwardX * move.y + d.rightX * move.x, y: d.forwardY * move.y + d.rightY * move.x };
+}
+
+function update(dt) {
+  const look = controls.takeLook();
+  follow.addLook(look.yaw, look.pitch);
+  const dir = groundDirection(controls.move());
+  let jump = controls.takeJump();
+  pending = Math.min(pending + dt, 0.25);
+  while (pending >= STEP) {
+    player.step(STEP, dir.x, dir.y, jump);
+    jump = false;
+    pending -= STEP;
+  }
+  figure.update(player, dt);
+  follow.update(player, dt);
+  placeSun();
 }
 
 // Frame rate, for the debug box and for automatic checks (window.forestStats)
@@ -128,7 +94,43 @@ const stats = {
   pixelRatio,
 };
 window.forestStats = stats;
-window.forestDebug = { scene: world.scene, camera, renderer, layout };
+let frames = 0;
+let windowStart = performance.now();
+let last = performance.now();
+
+renderer.setAnimationLoop((now) => {
+  const dt = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  update(dt);
+  renderer.render(world.scene, camera);
+  if (controls.used && !ui.hint.classList.contains('gone')) ui.hint.classList.add('gone');
+  frames++;
+  if (now - windowStart >= 1000) {
+    stats.fps = Math.round((frames * 1000) / (now - windowStart));
+    stats.frameMs = +((now - windowStart) / frames).toFixed(1);
+    stats.calls = renderer.info.render.calls;
+    stats.triangles = renderer.info.render.triangles;
+    stats.ready = true;
+    frames = 0;
+    windowStart = now;
+    if (!debugBox.hidden) {
+      debugBox.textContent = `${stats.fps} fps  ${stats.calls} draws  ${(stats.triangles / 1000).toFixed(0)}k tris  dpr ${pixelRatio}`;
+    }
+  }
+});
+
+document.getElementById('loading').remove();
+if (params.has('debug')) debugBox.hidden = false;
+const fullscreen = document.getElementById('fullscreen');
+if (document.fullscreenEnabled) {
+  fullscreen.hidden = false;
+  fullscreen.addEventListener('click', () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().then(() => screen.orientation?.lock?.('landscape').catch(() => {}));
+  });
+}
+
+// ---- Checks that run without a person (also when the page is in the background) ----
 
 /**
  * Draws the scene a number of times and waits for the GPU each time, so the cost of one
@@ -137,7 +139,7 @@ window.forestDebug = { scene: world.scene, camera, renderer, layout };
 window.forestMeasure = (count = 60) => {
   const gl = renderer.getContext();
   const pixel = new Uint8Array(4);
-  placeSun();
+  update(0);
   renderer.render(world.scene, camera);
   gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
   const t0 = performance.now();
@@ -148,26 +150,199 @@ window.forestMeasure = (count = 60) => {
   const ms = (performance.now() - t0) / count;
   return { msPerFrame: +ms.toFixed(2), fpsIfAlone: Math.round(1000 / ms), calls: renderer.info.render.calls, triangles: renderer.info.render.triangles };
 };
-let frames = 0;
-let windowStart = performance.now();
 
-renderer.setAnimationLoop((now) => {
-  placeSun();
-  renderer.render(world.scene, camera);
-  frames++;
-  if (now - windowStart >= 1000) {
-    stats.fps = Math.round((frames * 1000) / (now - windowStart));
-    stats.frameMs = +((now - windowStart) / frames).toFixed(1);
-    stats.calls = renderer.info.render.calls;
-    stats.triangles = renderer.info.render.triangles;
-    stats.ready = true;
-    frames = 0;
-    windowStart = now;
-    if (debugBox) {
-      debugBox.textContent = `${stats.fps} fps  ${stats.calls} draws  ${(stats.triangles / 1000).toFixed(0)}k tris  dpr ${pixelRatio}`;
-    }
+/** Runs the movement for some seconds with a steering function, without drawing. */
+function simulate(seconds, steer) {
+  const steps = Math.round(seconds / STEP);
+  for (let i = 0; i < steps; i++) {
+    const { x, y, jump = false, done = false } = steer(i * STEP);
+    if (done) return i * STEP;
+    player.step(STEP, x, y, jump);
   }
-});
+  return seconds;
+}
 
-loading.remove();
-if (params.has('debug')) debugBox.hidden = false;
+/**
+ * Moves route points that lie on a bridge onto the middle of its deck. (Where the path bends
+ * on a long bridge, the path line itself runs off the side of the deck, over the stream.)
+ */
+function keepOnBridges(points) {
+  return points.map((p) => {
+    for (const b of layout.bridges) {
+      const ux = p.x - b.x;
+      const uy = p.y - b.y;
+      const u = ux * b.dirX + uy * b.dirY;
+      const v = -ux * b.dirY + uy * b.dirX;
+      if (Math.abs(u) <= b.length * 0.5 + 100 && Math.abs(v) <= b.width * 0.5 + 150) {
+        return { x: b.x + b.dirX * u, y: b.y + b.dirY * u };
+      }
+    }
+    return p;
+  });
+}
+
+/** Follows a line of points on foot, like the Unreal walk test; counts how often it gets stuck. */
+function walkAlong(routePoints, maxSeconds) {
+  const points = keepOnBridges(routePoints);
+  let index = 0;
+  let stuck = 0;
+  let checkAt = 0;
+  let checkX = player.x;
+  let checkY = player.y;
+  const startDistance = player.distance;
+  const time = simulate(maxSeconds, (t) => {
+    while (index < points.length && Math.hypot(points[index].x - player.x, points[index].y - player.y) < 150) index++;
+    if (index >= points.length) return { x: 0, y: 0, done: true };
+    if (t - checkAt >= 2) {
+      // Less than half a meter in 2 seconds: stuck. Skip ahead to the next point.
+      if (Math.hypot(player.x - checkX, player.y - checkY) < 50) {
+        stuck++;
+        index = Math.min(index + 1, points.length - 1);
+      }
+      checkAt = t;
+      checkX = player.x;
+      checkY = player.y;
+    }
+    const dx = points[index].x - player.x;
+    const dy = points[index].y - player.y;
+    const d = Math.hypot(dx, dy);
+    return { x: dx / d, y: dy / d };
+  });
+  return { walkedM: +((player.distance - startDistance) / 100).toFixed(1), seconds: +time.toFixed(1), stuck, reachedEnd: index >= points.length };
+}
+
+const inside = (p, margin = 300) => Math.abs(p.x) < layout.halfSize() - margin && Math.abs(p.y) < layout.halfSize() - margin;
+
+window.forestTest = {
+  player,
+  follow,
+  layout,
+  /** Walk the main path from south to north, then each side path to its pond bench. */
+  walkPaths() {
+    const results = {};
+    const main = layout.pathLine.filter((p) => inside(p));
+    player.reset(main[0].x, main[0].y, 90);
+    results.mainPath = walkAlong(main, 120);
+    layout.sideLines.forEach((side, i) => {
+      player.reset(side[0].x, side[0].y, 0);
+      results[`pondPath${i + 1}`] = walkAlong(side, 60);
+    });
+    player.reset();
+    return results;
+  },
+  /** Jump on the spot: how high and how long. */
+  jump() {
+    player.reset();
+    const startZ = player.z;
+    let top = startZ;
+    let pressed = false;
+    const time = simulate(3, () => {
+      top = Math.max(top, player.z);
+      if (pressed && player.grounded) return { x: 0, y: 0, done: true };
+      const jump = !pressed;
+      pressed = true;
+      return { x: 0, y: 0, jump };
+    });
+    player.reset();
+    return { heightCm: Math.round(top - startZ), airSeconds: +time.toFixed(2) };
+  },
+  /** Walk straight at a fallen log: does it stop at the log, and can it jump over? */
+  log() {
+    const log = layout.logs.reduce((a, b) => (b.radius > a.radius ? b : a));
+    const yaw = THREE.MathUtils.degToRad(log.yaw);
+    const across = { x: -Math.sin(yaw), y: Math.cos(yaw) };
+    const tryIt = (jumpAt) => {
+      player.reset(log.x - across.x * 300, log.y - across.y * 300, 0);
+      let jumped = false;
+      simulate(3, (t) => {
+        const jump = jumpAt !== null && !jumped && t > jumpAt;
+        if (jump) jumped = true;
+        return { x: across.x, y: across.y, jump };
+      });
+      const side = (player.x - log.x) * across.x + (player.y - log.y) * across.y;
+      return side > log.radius ? 'went over' : 'stopped';
+    };
+    const logTop = Math.round(log.radius * 1.7);
+    const result = { logHeightCm: logTop, walking: tryIt(null), jumping: tryIt(0.3) };
+    player.reset();
+    return result;
+  },
+  /** Drop into the stream (away from bridges) at several places and walk out sideways. */
+  streamEscape(count = 8) {
+    const stream = layout.streamLine.filter((p) => inside(p, 600)
+      && layout.bridges.every((b) => Math.hypot(p.x - b.x, p.y - b.y) > b.length));
+    let out = 0;
+    for (let i = 0; i < count; i++) {
+      const k = Math.floor(((i + 0.5) / count) * (stream.length - 2));
+      const a = stream[k];
+      const b = stream[k + 1];
+      const len = Math.hypot(b.x - a.x, b.y - a.y);
+      const side = { x: -(b.y - a.y) / len, y: (b.x - a.x) / len };
+      const sign = i % 2 ? 1 : -1;
+      player.reset(a.x, a.y, 0);
+      // Out = standing on the ground clear of the stream banks at some point
+      const bankEdge = layout.rules.StreamWidth * 0.5 + layout.rules.StreamBankWidth + 100;
+      let climbed = false;
+      simulate(4, () => {
+        if (player.grounded && distanceToLine(layout.streamLine, player.x, player.y) > bankEdge) climbed = true;
+        return { x: side.x * sign, y: side.y * sign, done: climbed };
+      });
+      if (climbed) out++;
+    }
+    player.reset();
+    return { tries: count, climbedOut: out };
+  },
+  /** Walk in straight lines across the forest; count times it could not move at all for 2 s. */
+  wander(seconds = 120, seed = 7) {
+    let s = seed;
+    const random = () => ((s = (Math.imul(s, 1103515245) + 12345) >>> 0) / 4294967296);
+    player.reset();
+    let dir = { x: 0, y: 1 };
+    let trapped = 0; // inside the forest
+    let atEdge = 0; // pushing against the invisible wall at the walkable edge
+    let lastX = player.x;
+    let lastY = player.y;
+    let checkAt = 0;
+    let turnAt = 0;
+    const startDistance = player.distance;
+    simulate(seconds, (t) => {
+      if (t >= turnAt) {
+        const a = random() * Math.PI * 2;
+        dir = { x: Math.cos(a), y: Math.sin(a) };
+        turnAt = t + 3 + random() * 4;
+      }
+      if (t - checkAt >= 2) {
+        if (Math.hypot(player.x - lastX, player.y - lastY) < 20) {
+          const edgeGap = layout.halfSize() - Math.max(Math.abs(player.x), Math.abs(player.y));
+          if (edgeGap < MOVE.capsuleRadius + 20) atEdge++;
+          else trapped++;
+          turnAt = t; // pick a new direction
+        }
+        checkAt = t;
+        lastX = player.x;
+        lastY = player.y;
+      }
+      return { x: dir.x, y: dir.y, jump: random() < 0.004 };
+    });
+    const result = { walkedM: Math.round((player.distance - startDistance) / 100), trapped, atEdge };
+    player.reset();
+    return result;
+  },
+  /** Put the player somewhere and draw one frame (for pictures). */
+  place(x, y, yaw, cameraYaw = yaw, cameraPitch = -15) {
+    player.reset(x, y, yaw);
+    follow.yaw = cameraYaw;
+    follow.pitch = cameraPitch;
+    follow.arm = 400;
+    update(0);
+    renderer.render(world.scene, camera);
+  },
+  /** Walk forward with the stick held for some seconds (to see the walk in a picture). */
+  walkFor(seconds, x = 0, y = 1) {
+    simulate(seconds, () => groundDirection({ x, y }));
+    update(STEP);
+    renderer.render(world.scene, camera);
+    return { x: Math.round(player.x), y: Math.round(player.y), speed: Math.round(player.speed), grounded: player.grounded };
+  },
+  move: MOVE,
+};
